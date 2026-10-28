@@ -32,8 +32,7 @@ mod meeting_stone;
 mod mirror_timer;
 mod monster_move;
 mod movement;
-pub mod opcode;
-mod opcode_names;
+pub use benilla_wire::opcode;
 mod packet;
 mod page_text;
 mod parse;
@@ -87,6 +86,7 @@ pub use battlefield::{
     BattlefieldList, BattlefieldPosition, BattlefieldPositions, BattlefieldStatus, PvpLogData,
     PvpLogRow, BATTLEFIELD_POSITIONS_MAX,
 };
+pub use benilla_wire::opcode_name;
 pub use binder::{binder_activate, PlayerBound};
 pub use channel::{channel_notice, ChannelNoticeTail, ChannelNotify};
 pub use chat::{
@@ -182,7 +182,6 @@ pub use mirror_timer::{
 pub use movement::{
     JumpInfo, MoveMode, MovementInfo, RelayVerb, SpeedKind, SplineMode, TransportPose,
 };
-pub use opcode_names::opcode_name;
 pub use packet::{CreatureQueryInfo, MonsterMoveFacing, ServerPacket};
 pub use page_text::page_text_query;
 pub use parse::{parse_server, parse_server_with_tail};

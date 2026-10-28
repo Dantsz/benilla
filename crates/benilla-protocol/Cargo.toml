@@ -12,6 +12,8 @@ workspace = true
 anyhow.workspace = true
 clap.workspace = true
 benilla-srp = { path = "../benilla-srp" }
+# The opcode, wire and GUID vocabulary, re-exported at `messages::opcode`, `wire` and `guid`.
+benilla-wire = { path = "../benilla-wire" }
 flate2 = "1.0"
 # The logon's draw among a realmlist's addresses.
 rand = "0.8.6"
