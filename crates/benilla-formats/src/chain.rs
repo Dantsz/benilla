@@ -4,9 +4,10 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use benilla_mpq::Archive;
+use benilla_mpq::{Archive, ByteSource};
 
 use crate::{Locale, VANILLA_BASE_ORDER};
 
@@ -95,6 +96,36 @@ impl Chain {
             archives.push(
                 Archive::open(path).with_context(|| format!("opening MPQ {}", path.display()))?,
             );
+        }
+        let mut chain = Self {
+            archives,
+            locale: Locale::default(),
+        };
+        chain.locale = crate::wow_ini::client_locale(&chain);
+        Ok(chain)
+    }
+
+    /// A chain over archives already in memory, named as their files in `Data` are: the same
+    /// [`mount_order`] and `Wow.ini` locale as [`Chain::open`], for a host with no filesystem (the
+    /// browser). Names outside the mount order are not mounted, as in a directory.
+    pub fn from_sources(sources: Vec<(String, Arc<dyn ByteSource>)>) -> Result<Self> {
+        let mut names: Vec<String> = sources.iter().map(|(n, _)| n.clone()).collect();
+        names.sort();
+        let mut by_name: Vec<Option<(String, Arc<dyn ByteSource>)>> =
+            sources.into_iter().map(Some).collect();
+        let mut archives = Vec::new();
+        for name in mount_order(&names) {
+            let (name, source) = by_name
+                .iter_mut()
+                .find(|s| s.as_ref().is_some_and(|(n, _)| *n == name))
+                .and_then(Option::take)
+                .expect("mount_order returns given names");
+            archives.push(
+                Archive::from_source(source, &name).with_context(|| format!("opening {name}"))?,
+            );
+        }
+        if archives.is_empty() {
+            bail!("no known vanilla MPQs among the given archives");
         }
         let mut chain = Self {
             archives,
@@ -478,5 +509,38 @@ mod tests {
             mount_order(&dir),
             owned(&["DBC.mpq", "Model.MPQ", "PATCH.mpq"])
         );
+    }
+}
+
+#[cfg(test)]
+mod from_sources_tests {
+    use super::*;
+
+    /// The chain built from the install's archive bytes reads what the directory chain reads.
+    #[test]
+    fn an_in_memory_chain_resolves_as_the_directory_does() {
+        let data = crate::wow_data_or_skip!();
+        let on_disk = Chain::open(&data).expect("open the install");
+        let names = ["dbc.MPQ", "patch.MPQ", "patch-2.MPQ", "notes.txt"];
+        let sources = names
+            .iter()
+            .filter_map(|n| {
+                let bytes = std::fs::read(data.join(n)).ok()?;
+                Some((n.to_string(), Arc::new(bytes) as Arc<dyn ByteSource>))
+            })
+            .collect();
+        let in_memory = Chain::from_sources(sources).expect("mount from memory");
+        for file in [
+            "DBFilesClient\\ChrRaces.dbc",
+            "DBFilesClient\\Spell.dbc",
+            "DBFilesClient\\WorldSafeLocs.dbc",
+        ] {
+            assert_eq!(
+                in_memory.read(file).unwrap(),
+                on_disk.read(file).unwrap(),
+                "{file}"
+            );
+        }
+        assert!(Chain::from_sources(Vec::new()).is_err());
     }
 }
