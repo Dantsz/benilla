@@ -7,7 +7,7 @@
 //!   | awk '!seen[$1]++ {printf "    (0x%04X, \"%s\"),\n", $1, $2}'
 //! ```
 //!
-//! For diagnostics only (the dropped-packet tally, skip logs); dispatch uses [`super::opcode`].
+//! For diagnostics only (the dropped-packet tally, skip logs); dispatch uses [`crate::opcode`].
 
 /// The 1.12.1 name of a world opcode in either direction, by binary search of the sorted table.
 pub fn opcode_name(opcode: u16) -> Option<&'static str> {

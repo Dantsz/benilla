@@ -644,6 +644,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "benilla-srp",
+ "benilla-wire",
  "clap",
  "flate2",
  "libc",
@@ -683,6 +684,10 @@ dependencies = [
 
 [[package]]
 name = "benilla-wdt"
+version = "0.2.0"
+
+[[package]]
+name = "benilla-wire"
 version = "0.2.0"
 
 [[package]]

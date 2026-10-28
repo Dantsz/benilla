@@ -1,0 +1,11 @@
+[package]
+name = "benilla-wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WoW 1.12.1 (build 5875) wire vocabulary: opcodes, wire helpers, packed GUIDs"
+
+[lints]
+workspace = true
+
+[dependencies]

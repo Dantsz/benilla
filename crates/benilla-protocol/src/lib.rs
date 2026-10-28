@@ -3,11 +3,14 @@
 
 pub mod auth;
 pub mod events;
-pub mod guid;
 pub mod messages;
-pub mod wire;
 pub mod world;
+
+#[cfg(test)]
+mod capacity_scan;
+
 pub use auth::{AuthReject, LogonReply};
+pub use benilla_wire::{guid, wire};
 pub use events::{
     decode, CharAction, EntityKind, LoginRefusal, LoginStage, MoveSpeeds, NotifyBlock, Poll,
     RosterCause, SessionEnd, SessionEvent, SessionEventKind, TransportClock,
