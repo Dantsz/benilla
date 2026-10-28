@@ -7,7 +7,9 @@
 //! refuses it with [`Error::NotFound`], so a chain walker asks [`Archive::is_delete_marker`] and
 //! stops there.
 //!
-//! [`Archive`] is a cheap `Arc` handle; each read opens its own file handle, so reads need no lock.
+//! [`Archive`] is a cheap `Arc` handle over a [`ByteSource`]: a file ([`Archive::open`]) or bytes
+//! already in memory ([`Archive::from_source`]), as a browser hands the archives over. Every read is
+//! positional, so reads need no lock.
 //! [`Archive::open_file`] reads one file in place, a sector at a time, for a stream.
 //! Every allocation sized from a header count or a sector length is capped by the file's size, so
 //! a lying header fails with [`Error::Corrupt`].
@@ -59,7 +61,9 @@ struct BlockEntry {
 
 /// An archive's index, parsed once and immutable, shared behind an `Arc`.
 struct Index {
+    /// The file's path, or the name given to an in-memory source.
     path: PathBuf,
+    source: Arc<dyn ByteSource>,
     /// Byte offset of the MPQ header in the file: 0 in 1.12 data, but found, not assumed.
     archive_offset: u64,
     /// The uncompressed sector size, `512 << block_size`.
@@ -109,6 +113,107 @@ impl From<io::Error> for Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+/// The bytes of one archive, read at absolute offsets. `Send + Sync`, so [`Archive`] stays a cheap
+/// shared handle.
+pub trait ByteSource: Send + Sync {
+    /// The archive's length in bytes.
+    fn len(&self) -> u64;
+    /// Whether the archive is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Fill `buf` from `offset`; a short read is an `UnexpectedEof` error.
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
+}
+
+/// An archive file on disk, one handle read positionally (`pread` on unix, `ReadFile` with an
+/// offset on Windows), so concurrent reads share it without a lock.
+pub struct FileSource {
+    file: File,
+    len: u64,
+    #[cfg(not(any(unix, windows)))]
+    path: PathBuf,
+}
+
+impl FileSource {
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let file = File::open(path.as_ref())?;
+        let len = file.metadata()?.len();
+        Ok(Self {
+            file,
+            len,
+            #[cfg(not(any(unix, windows)))]
+            path: path.as_ref().to_path_buf(),
+        })
+    }
+}
+
+impl ByteSource for FileSource {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    #[cfg(unix)]
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        std::os::unix::fs::FileExt::read_exact_at(&self.file, buf, offset)
+    }
+
+    #[cfg(windows)]
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0;
+        while done < buf.len() {
+            match self
+                .file
+                .seek_read(&mut buf[done..], offset + done as u64)?
+            {
+                0 => return Err(io::ErrorKind::UnexpectedEof.into()),
+                n => done += n,
+            }
+        }
+        Ok(())
+    }
+
+    /// No positional read here: a handle of its own per read, as the reader did before.
+    #[cfg(not(any(unix, windows)))]
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let _ = &self.file;
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(buf)
+    }
+}
+
+fn read_slice(bytes: &[u8], offset: u64, buf: &mut [u8]) -> io::Result<()> {
+    let start =
+        usize::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+    let src = start
+        .checked_add(buf.len())
+        .and_then(|end| bytes.get(start..end))
+        .ok_or(io::ErrorKind::UnexpectedEof)?;
+    buf.copy_from_slice(src);
+    Ok(())
+}
+
+/// An archive held in memory.
+impl ByteSource for Vec<u8> {
+    fn len(&self) -> u64 {
+        self.as_slice().len() as u64
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        read_slice(self, offset, buf)
+    }
+}
+
+impl ByteSource for Box<[u8]> {
+    fn len(&self) -> u64 {
+        (**self).len() as u64
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        read_slice(self, offset, buf)
+    }
+}
+
 fn to_u32s(bytes: &[u8]) -> Vec<u32> {
     bytes
         .as_chunks::<4>()
@@ -127,16 +232,22 @@ impl Archive {
     /// Open an archive: find the header, then read and decrypt the hash and block tables.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
-        let file_len = file.metadata()?.len();
+        let source = FileSource::open(&path)?;
+        Self::from_source(Arc::new(source), path)
+    }
 
-        let archive_offset = find_header(&mut file, file_len)?;
+    /// Open an archive over any [`ByteSource`]; `name` stands in for the path in
+    /// [`Archive::path`] and in messages.
+    pub fn from_source(source: Arc<dyn ByteSource>, name: impl Into<PathBuf>) -> Result<Self> {
+        let path = name.into();
+        let file_len = source.len();
+
+        let archive_offset = find_header(&*source, file_len)?;
 
         // The 32-byte V1 header: later versions only extend it, and every 1.12 table offset fits
         // a `u32`, so the V2 hi-block table is never needed.
-        file.seek(SeekFrom::Start(archive_offset))?;
         let mut hdr = [0u8; 32];
-        file.read_exact(&mut hdr)?;
+        source.read_at(archive_offset, &mut hdr)?;
         let signature = hdr.u32_at(0).ok_or(Error::NotMpq)?;
         debug_assert_eq!(signature, SIGNATURE);
         let block_size_shift = hdr.u16_at(14).ok_or(Error::NotMpq)?;
@@ -154,13 +265,13 @@ impl Archive {
         let block_table_size = hdr.u32_at(28).ok_or(Error::NotMpq)? as usize;
 
         let hash_table = read_hash_table(
-            &mut file,
+            &*source,
             archive_offset + hash_table_pos,
             hash_table_size,
             file_len,
         )?;
         let block_table = read_block_table(
-            &mut file,
+            &*source,
             archive_offset + block_table_pos,
             block_table_size,
             file_len,
@@ -169,6 +280,7 @@ impl Archive {
         Ok(Archive {
             index: Arc::new(Index {
                 path,
+                source,
                 archive_offset,
                 sector_size,
                 hash_table,
@@ -194,7 +306,7 @@ impl Archive {
             .is_some_and(|b| b.flags & FLAG_DELETE_MARKER != 0)
     }
 
-    /// The archive's path.
+    /// The archive's path, or the name an in-memory source was opened with.
     pub fn path(&self) -> &Path {
         &self.index.path
     }
@@ -204,7 +316,7 @@ impl Archive {
         self.open_file(name)?.read_all()
     }
 
-    /// Open a file for reading in place: its own OS handle, its sectors decompressed one at a
+    /// Open a file for reading in place: its sectors decompressed one at a
     /// time as they are read, so a long sound streams without the whole file read first, as the
     /// reference's FMOD streams read the archive through the file callbacks it registers
     /// (`FSOUND_File_SetCallbacks` at `0x7a45e4`).
@@ -227,18 +339,17 @@ impl Archive {
             return Err(Error::Unsupported(format!("single-unit file {name}")));
         }
 
-        let file = File::open(&idx.path)?;
+        let source = Arc::clone(&idx.source);
         let file_pos = idx.archive_offset + block.file_pos as u64;
         let file_size = block.file_size as usize;
         // `0x651450` reads the sector table when any of `0xff00` is set (`0x651549`).
         let codec_flags = block.flags & FLAG_CODEC_MASK;
         let compressed = codec_flags != 0;
 
-        let file_len = file.metadata()?.len();
-        let avail = avail_from(file_len, file_pos);
+        let avail = avail_from(source.len(), file_pos);
 
         let mut open = ArchiveFile {
-            file,
+            source,
             name: name.to_owned(),
             base: file_pos,
             size: file_size,
@@ -271,9 +382,8 @@ impl Archive {
                 "{name}: sector offset table ({otab_len} entries) larger than the archive"
             )));
         }
-        open.file.seek(SeekFrom::Start(file_pos))?;
         let mut otab = vec![0u8; otab_cap * 4]; // == otab_len * 4, proven <= avail above
-        open.file.read_exact(&mut otab)?;
+        open.source.read_at(file_pos, &mut otab)?;
         let offsets = otab
             .as_chunks::<4>()
             .0
@@ -291,7 +401,7 @@ impl Archive {
 /// A file opened in an archive ([`Archive::open_file`]): `Read + Seek` over its uncompressed
 /// bytes, holding the one decompressed sector under the read position.
 pub struct ArchiveFile {
-    file: File,
+    source: Arc<dyn ByteSource>,
     name: String,
     /// The file's first byte in the archive file.
     base: u64,
@@ -319,9 +429,8 @@ impl ArchiveFile {
     /// The whole file from its start, sector by sector.
     fn read_all(mut self) -> Result<Vec<u8>> {
         if self.offsets.is_none() {
-            self.file.seek(SeekFrom::Start(self.base))?;
             let mut out = vec![0u8; self.size]; // proven <= avail by `open_file`
-            self.file.read_exact(&mut out)?;
+            self.source.read_at(self.base, &mut out)?;
             return Ok(out);
         }
         let sector_count = self.size.div_ceil(self.sector_size);
@@ -358,10 +467,9 @@ impl ArchiveFile {
             return Err(Error::Corrupt(format!("{name}: sector {i} is empty")));
         }
 
-        self.file
-            .seek(SeekFrom::Start(self.base + u64::from(start)))?;
         let mut raw = vec![0u8; comp_len]; // proven <= avail above
-        self.file.read_exact(&mut raw)?;
+        self.source
+            .read_at(self.base + u64::from(start), &mut raw)?;
 
         let out = if comp_len >= want {
             // A sector that would not shrink is stored verbatim.
@@ -392,8 +500,7 @@ impl ArchiveFile {
     /// Stored bytes at `pos` into `buf`, straight from the archive file.
     fn read_stored(&mut self, buf: &mut [u8]) -> Result<usize> {
         let n = buf.len().min(self.size - self.pos as usize);
-        self.file.seek(SeekFrom::Start(self.base + self.pos))?;
-        self.file.read_exact(&mut buf[..n])?;
+        self.source.read_at(self.base + self.pos, &mut buf[..n])?;
         Ok(n)
     }
 
@@ -484,12 +591,11 @@ impl Index {
 
 /// The `MPQ\x1A` header's offset: the first 512-aligned match, or where a `MPQ\x1B` user-data
 /// header points.
-fn find_header(file: &mut File, file_len: u64) -> Result<u64> {
+fn find_header(source: &dyn ByteSource, file_len: u64) -> Result<u64> {
     let mut off = 0u64;
     while off + 4 <= file_len {
-        file.seek(SeekFrom::Start(off))?;
         let mut sig = [0u8; 4];
-        if file.read_exact(&mut sig).is_err() {
+        if source.read_at(off, &mut sig).is_err() {
             break;
         }
         match u32::from_le_bytes(sig) {
@@ -497,7 +603,7 @@ fn find_header(file: &mut File, file_len: u64) -> Result<u64> {
             USERDATA_SIGNATURE => {
                 // User-data header: u32 sig, u32 user_data_size, u32 header_offset from here.
                 let mut rest = [0u8; 8];
-                file.read_exact(&mut rest)?;
+                source.read_at(off + 4, &mut rest)?;
                 let header_offset = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]) as u64;
                 return Ok(off + header_offset);
             }
@@ -509,7 +615,7 @@ fn find_header(file: &mut File, file_len: u64) -> Result<u64> {
 }
 
 fn read_hash_table(
-    file: &mut File,
+    source: &dyn ByteSource,
     pos: u64,
     count: usize,
     file_len: u64,
@@ -523,8 +629,7 @@ fn read_hash_table(
         )));
     }
     let mut bytes = vec![0u8; cap * 16]; // == count * 16, proven <= avail above
-    file.seek(SeekFrom::Start(pos))?;
-    file.read_exact(&mut bytes)?;
+    source.read_at(pos, &mut bytes)?;
     let mut words = to_u32s(&bytes);
     decrypt_block(&mut words, hash_string("(hash table)", hash_type::FILE_KEY));
     Ok((0..count)
@@ -541,7 +646,7 @@ fn read_hash_table(
 }
 
 fn read_block_table(
-    file: &mut File,
+    source: &dyn ByteSource,
     pos: u64,
     count: usize,
     file_len: u64,
@@ -555,8 +660,7 @@ fn read_block_table(
         )));
     }
     let mut bytes = vec![0u8; cap * 16]; // == count * 16, proven <= avail above
-    file.seek(SeekFrom::Start(pos))?;
-    file.read_exact(&mut bytes)?;
+    source.read_at(pos, &mut bytes)?;
     let mut words = to_u32s(&bytes);
     decrypt_block(
         &mut words,
