@@ -12,6 +12,8 @@ workspace = true
 anyhow.workspace = true
 clap.workspace = true
 benilla-srp = { path = "../benilla-srp" }
+# The opcode, wire and GUID vocabulary, re-exported at `messages::opcode`, `wire` and `guid`.
+benilla-wire = { path = "../benilla-wire" }
 flate2 = "1.0"
 # The logon challenge's time-zone bias: `localtime_r` on unix, the CRT's zone on Windows.
 libc = "0.2"
