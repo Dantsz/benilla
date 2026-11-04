@@ -48,20 +48,23 @@ fn is_patch_glob_match(name: &str) -> bool {
 /// archive that does not open (`0x4038ef` → `0x64d0e0`, Error #134); `speech2.MPQ` and the patches
 /// are optional.
 fn mount_order(dir_names: &[String]) -> Result<Vec<String>> {
+    for base in VANILLA_BASE_ORDER.iter().rev() {
+        if !dir_names.iter().any(|n| n.eq_ignore_ascii_case(base)) {
+            bail!("Failed to open archive Data\\{base}: the file is not there");
+        }
+    }
+    Ok(present_in_mount_order(dir_names))
+}
+
+/// [`mount_order`] over the archives a listing has, with no base archive required.
+fn present_in_mount_order(dir_names: &[String]) -> Vec<String> {
     let find = |want: &str| {
         dir_names
             .iter()
             .find(|n| n.eq_ignore_ascii_case(want))
             .cloned()
     };
-    let mut order = Vec::with_capacity(VANILLA_BASE_ORDER.len());
-    for base in VANILLA_BASE_ORDER.iter().rev() {
-        let Some(name) = find(base) else {
-            bail!("Failed to open archive Data\\{base}: the file is not there");
-        };
-        order.push(name);
-    }
-    order.reverse();
+    let mut order: Vec<String> = VANILLA_BASE_ORDER.iter().filter_map(|b| find(b)).collect();
     order.extend(find("patch.MPQ"));
     let mut patches: Vec<String> = dir_names
         .iter()
@@ -71,7 +74,7 @@ fn mount_order(dir_names: &[String]) -> Result<Vec<String>> {
     patches.sort_by_key(|n| n.to_ascii_lowercase());
     order.extend(patches);
     order.extend(find("speech2.MPQ"));
-    Ok(order)
+    order
 }
 
 impl Chain {
@@ -119,13 +122,17 @@ impl Chain {
     /// A chain over archives already in memory, named as their files in `Data` are: the same
     /// [`mount_order`] and `Wow.ini` locale as [`Chain::open`], for a host with no filesystem (the
     /// browser). Names outside the mount order are not mounted, as in a directory.
+    ///
+    /// Deviation: a missing base archive is no error here, because a host that holds the archives
+    /// in memory hands over only those it reads (a server's DBCs are in `dbc.MPQ` and the patches,
+    /// and `model.MPQ` alone is 190 MB); the reference only ever mounts a whole `Data` directory.
     pub fn from_sources(sources: Vec<(String, Arc<dyn ByteSource>)>) -> Result<Self> {
         let mut names: Vec<String> = sources.iter().map(|(n, _)| n.clone()).collect();
         names.sort();
         let mut by_name: Vec<Option<(String, Arc<dyn ByteSource>)>> =
             sources.into_iter().map(Some).collect();
         let mut archives = Vec::new();
-        for name in mount_order(&names)? {
+        for name in present_in_mount_order(&names) {
             let (name, source) = by_name
                 .iter_mut()
                 .find(|s| s.as_ref().is_some_and(|(n, _)| *n == name))
