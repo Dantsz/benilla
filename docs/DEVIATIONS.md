@@ -34,7 +34,7 @@ Each entry is the first sentence of a `Deviation:` comment, linking to where it 
 - [benilla-blp](#benilla-blp): 1
 - [benilla-formats](#benilla-formats): 25
 - [benilla-lua](#benilla-lua): 11
-- [benilla-protocol](#benilla-protocol): 29
+- [benilla-protocol](#benilla-protocol): 28
 - [benilla-srp](#benilla-srp): 2
 - [benilla-ui](#benilla-ui): 135
 - [benilla-world](#benilla-world): 47
@@ -553,8 +553,9 @@ Each entry is the first sentence of a `Deviation:` comment, linking to where it 
 
 #### chain
 
-- An archive that fails to open is an error. In 1.12.1 a failed base archive is fatal (Error #134: `0x4038ea` → `0x64d0e0` → `0x64cfa0` → `0x64cc80`, `ExitProcess`) and only a failing patch archive is skipped, silently; benilla fails on that too, because a skipped corrupt archive surfaces only as missing files far downstream. ([`src/chain.rs:79`](../crates/benilla-formats/src/chain.rs#L79))
-- A last line with no CR or LF after it is passed too, because `0x648fb0` ends at the buffer's end without a flush (`0x64907f`) and drops it, a bug that loses a listfile's last name when it lacks a newline. ([`src/chain.rs:245`](../crates/benilla-formats/src/chain.rs#L245))
+- An archive that fails to open is an error. In 1.12.1 a failed base archive is fatal (Error #134: `0x4038ea` → `0x64d0e0` → `0x64cfa0` → `0x64cc80`, `ExitProcess`) and only a failing patch archive is skipped, silently; benilla fails on that too, because a skipped corrupt archive surfaces only as missing files far downstream. ([`src/chain.rs:83`](../crates/benilla-formats/src/chain.rs#L83))
+- A missing base archive is no error here, because a host that holds the archives in memory hands over only those it reads (a server's DBCs are in `dbc.MPQ` and the patches, and `model.MPQ` alone is 190 MB); the reference only ever mounts a whole `Data` directory. ([`src/chain.rs:126`](../crates/benilla-formats/src/chain.rs#L126))
+- A last line with no CR or LF after it is passed too, because `0x648fb0` ends at the buffer's end without a flush (`0x64907f`) and drops it, a bug that loses a listfile's last name when it lacks a newline. ([`src/chain.rs:283`](../crates/benilla-formats/src/chain.rs#L283))
 
 #### characters
 
@@ -654,7 +655,7 @@ Each entry is the first sentence of a `Deviation:` comment, linking to where it 
 
 #### (crate root)
 
-- A named piece takes a `:port` here, where the reference hands a name to `gethostbyname` whole (`0x43ba0e`) and only a dotted piece takes a port (`0x43f3d0`), because a server on a non-default logon port behind a host name is everyday use. ([`src/lib.rs:174`](../crates/benilla-protocol/src/lib.rs#L174))
+- A named piece takes a `:port` here, where the reference hands a name to `gethostbyname` whole (`0x43ba0e`) and only a dotted piece takes a port (`0x43f3d0`), because a server on a non-default logon port behind a host name is everyday use. ([`src/lib.rs:177`](../crates/benilla-protocol/src/lib.rs#L177))
 
 #### auth
 
@@ -683,7 +684,6 @@ Each entry is the first sentence of a `Deviation:` comment, linking to where it 
 - The 1.12 client appends a zlib chat transcript to a category 2 ticket (`0x5ef936`); we omit it because vmangos never reads it and logs the leftover bytes. The client also cuts the text at 1999 chars (`0x5ef7fd`); we do not, as the Help window stops at 500. ([`src/messages/gm_ticket.rs:48`](../crates/benilla-protocol/src/messages/gm_ticket.rs#L48))
 - String reads are unbounded. The reference `0x4191b0` caps each field, counting the NUL (roster name `0x30`, notes `0x80`, MOTD `0x200`, info `0x7d0`, guild name `0x60`, rank name `0x40`), and on overflow empties it and no-ops every later read in the packet. Reads stay unbounded because unbounded reads cannot poison a packet, and every cap is far above the server's own length limits, so a legitimate packet reads the same. ([`src/messages/guild.rs:4`](../crates/benilla-protocol/src/messages/guild.rs#L4))
 - A reason of 3 or more is silent, where the reference prints an uninitialized stack buffer, because 3 is the server's `INSTANCERESET_FAIL_SILENTLY`. ([`src/messages/instance.rs:71`](../crates/benilla-protocol/src/messages/instance.rs#L71))
-- 2 or more prints nothing, because the reference prints an uninitialized buffer. ([`src/messages/opcode.rs:1063`](../crates/benilla-protocol/src/messages/opcode.rs#L1063))
 - The consumer refuses 64 and up, because there the reference's store overruns its table. ([`src/messages/packet.rs:662`](../crates/benilla-protocol/src/messages/packet.rs#L662))
 - A body too short for the position gives `None` where the client redisplays a stale global, because showing a stale queue position as current is a client bug. ([`src/messages/parse.rs:302`](../crates/benilla-protocol/src/messages/parse.rs#L302))
 - A type outside 1-7 reads as nothing rather than the reference's default arm, because that arm under-pushes its returns. ([`src/messages/pet.rs:71`](../crates/benilla-protocol/src/messages/pet.rs#L71))
@@ -864,6 +864,11 @@ Each entry is the first sentence of a `Deviation:` comment, linking to where it 
 - On the thumb it is the grabbed point, where `CSimpleSlider` (`0x789ba0`/`0x789ca0`) always centers it, because that feels less surprising and a stock-sized thumb hides the difference. ([`src/widget/kinds/mod.rs:1534`](../crates/benilla-ui/src/widget/kinds/mod.rs#L1534))
 - Levels pack contiguously, because the reference's resuming cursor (`0x764fd3`/`0x764fd8`) leaves a hole past a wide gap ({0, 4, 6} at bound 7 gives {0, 1, 3} at bound 4). No draw or hit order sees the hole, but the raised frame takes the bound, so `GetFrameLevel` shows one level more there than here. ([`src/widget/propagation.rs:189`](../crates/benilla-ui/src/widget/propagation.rs#L189))
 - The frame is still in the old parent's child list during `OnHide`, unlike the reference (`0x76ab34` unlinks first), because a handler that itself reparents must not find the lists half-spliced. ([`src/widget/propagation.rs:312`](../crates/benilla-ui/src/widget/propagation.rs#L312))
+### benilla-wire
+
+#### opcode
+
+- 2 or more prints nothing, because the reference prints an uninitialized buffer. ([`src/opcode.rs:1063`](../crates/benilla-wire/src/opcode.rs#L1063))
 ### benilla-world
 
 #### clouds
@@ -972,4 +977,4 @@ Each entry is the first sentence of a `Deviation:` comment, linking to where it 
 #### zfill
 
 - The reference twins every translucent command, authored-blend glass included; here twins exist only during an instance alpha episode, because that way every steady-state look is untouched. ([`src/zfill.rs:9`](../crates/benilla-world/src/zfill.rs#L9))
-
+- Twins lead by a fixed −8 yd sort bias (`crate::model_render::ZFILL_SORT_BIAS`) instead of by the instance's sort-key tie because Bevy sorts per entity; transparent content within that window behind a fading body is depth-clipped where the body covers it, for the episode. ([`src/zfill.rs:13`](../crates/benilla-world/src/zfill.rs#L13))
